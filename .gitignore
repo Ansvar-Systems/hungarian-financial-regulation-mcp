@@ -5,3 +5,4 @@ dist/
 *.db-wal
 *.db-shm
 data/ingest-progress.json
+data/cache/
