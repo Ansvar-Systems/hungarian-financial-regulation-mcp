@@ -1,0 +1,49 @@
+name: Check Data Freshness
+
+on:
+  schedule:
+    # Run every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check-freshness:
+    name: Check MNB Data Freshness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check data freshness
+        run: |
+          echo "## Data Freshness Check — $(date -u '+%Y-%m-%d')" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check MNB website reachability
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://www.mnb.hu/ || echo "000")
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ MNB website reachable (HTTP $HTTP_STATUS)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ MNB website returned HTTP $HTTP_STATUS" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Report database size if present
+          if [ -f "data/database.db" ]; then
+            SIZE=$(du -sh data/database.db | cut -f1)
+            MTIME=$(date -r data/database.db '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "unknown")
+            echo "📦 Database: $SIZE (last modified: $MTIME)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ data/database.db not present — database is provisioned at build time" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Source: https://www.mnb.hu/" >> "$GITHUB_STEP_SUMMARY"

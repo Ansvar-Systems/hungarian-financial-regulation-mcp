@@ -43,6 +43,20 @@ try {
 
 const SERVER_NAME = "hungarian-financial-regulation-mcp";
 
+// --- Response metadata ---
+
+const DATA_AGE = "live"; // crawls mnb.hu at ingest time
+
+function responseMeta() {
+  return {
+    disclaimer:
+      "This data is provided for informational purposes only and does not constitute legal advice. Always verify with official MNB sources.",
+    data_age: DATA_AGE,
+    copyright: "Magyar Nemzeti Bank (MNB) — https://www.mnb.hu/",
+    source_url: "https://www.mnb.hu/",
+  };
+}
+
 // --- Tool definitions ---
 
 const TOOLS = [
@@ -182,14 +196,22 @@ const CheckCurrencyArgs = z.object({
 function textContent(data: unknown) {
   return {
     content: [
-      { type: "text" as const, text: JSON.stringify(data, null, 2) },
+      {
+        type: "text" as const,
+        text: JSON.stringify({ ...(data as object), _meta: responseMeta() }, null, 2),
+      },
     ],
   };
 }
 
-function errorContent(message: string) {
+function errorContent(message: string, errorType = "tool_error") {
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify({ error: message, _error_type: errorType, _meta: responseMeta() }, null, 2),
+      },
+    ],
     isError: true as const,
   };
 }
@@ -212,12 +234,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case "hu_fin_search_regulations": {
         const parsed = SearchRegulationsArgs.parse(args);
-        const results = searchProvisions({
+        const raw = searchProvisions({
           query: parsed.query,
           sourcebook: parsed.sourcebook,
           status: parsed.status,
           limit: parsed.limit,
         });
+        const results = raw.map((item) => ({
+          ...item,
+          _citation: buildCitation(
+            `${item.sourcebook_id} ${item.reference}`,
+            item.title ?? item.reference,
+            "hu_fin_get_regulation",
+            { sourcebook: item.sourcebook_id, reference: item.reference },
+          ),
+        }));
         return textContent({ results, count: results.length });
       }
 
@@ -227,17 +258,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!provision) {
           return errorContent(
             `Provision not found: ${parsed.sourcebook} ${parsed.reference}`,
+            "not_found",
           );
         }
-        const p = provision as Record<string, unknown>;
         return textContent({
           ...provision,
           _citation: buildCitation(
-            `${parsed.sourcebook} ${String(p.reference ?? parsed.reference)}`,
-            String(p.title ?? `${parsed.sourcebook} ${parsed.reference}`),
+            `${parsed.sourcebook} ${provision.reference}`,
+            provision.title ?? `${parsed.sourcebook} ${parsed.reference}`,
             "hu_fin_get_regulation",
             { sourcebook: parsed.sourcebook, reference: parsed.reference },
-            p.url as string | undefined,
           ),
         });
       }
@@ -249,11 +279,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "hu_fin_search_enforcement": {
         const parsed = SearchEnforcementArgs.parse(args);
-        const results = searchEnforcement({
+        const raw = searchEnforcement({
           query: parsed.query,
           action_type: parsed.action_type,
           limit: parsed.limit,
         });
+        const results = raw.map((item) => ({
+          ...item,
+          _citation: buildCitation(
+            item.reference_number ?? String(item.id),
+            item.firm_name,
+            "hu_fin_get_regulation",
+            { sourcebook: "", reference: item.reference_number ?? String(item.id) },
+          ),
+        }));
         return textContent({ results, count: results.length });
       }
 
@@ -279,7 +318,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return errorContent(`Error executing ${name}: ${message}`);
+    return errorContent(`Error executing ${name}: ${message}`, "execution_error");
   }
 });
 
