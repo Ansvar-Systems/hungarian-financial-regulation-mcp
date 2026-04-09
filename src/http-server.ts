@@ -30,6 +30,7 @@ import {
   searchEnforcement,
   checkProvisionCurrency,
 } from "./db.js";
+import { buildCitation } from "./utils/citation.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,6 +46,20 @@ try {
   pkgVersion = pkg.version;
 } catch {
   // fallback
+}
+
+// --- Response metadata ---
+
+const DATA_AGE = "live"; // crawls mnb.hu at ingest time
+
+function responseMeta() {
+  return {
+    disclaimer:
+      "This data is provided for informational purposes only and does not constitute legal advice. Always verify with official MNB sources.",
+    data_age: DATA_AGE,
+    copyright: "Magyar Nemzeti Bank (MNB) — https://www.mnb.hu/",
+    source_url: "https://www.mnb.hu/",
+  };
 }
 
 // --- Tool definitions ---
@@ -164,13 +179,23 @@ function createMcpServer(): Server {
 
     function textContent(data: unknown) {
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ...(data as object), _meta: responseMeta() }, null, 2),
+          },
+        ],
       };
     }
 
-    function errorContent(message: string) {
+    function errorContent(message: string, errorType = "tool_error") {
       return {
-        content: [{ type: "text" as const, text: message }],
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ error: message, _error_type: errorType, _meta: responseMeta() }, null, 2),
+          },
+        ],
         isError: true as const,
       };
     }
@@ -179,12 +204,21 @@ function createMcpServer(): Server {
       switch (name) {
         case "hu_fin_search_regulations": {
           const parsed = SearchRegulationsArgs.parse(args);
-          const results = searchProvisions({
+          const raw = searchProvisions({
             query: parsed.query,
             sourcebook: parsed.sourcebook,
             status: parsed.status,
             limit: parsed.limit,
           });
+          const results = raw.map((item) => ({
+            ...item,
+            _citation: buildCitation(
+              `${item.sourcebook_id} ${item.reference}`,
+              item.title ?? item.reference,
+              "hu_fin_get_regulation",
+              { sourcebook: item.sourcebook_id, reference: item.reference },
+            ),
+          }));
           return textContent({ results, count: results.length });
         }
 
@@ -194,9 +228,18 @@ function createMcpServer(): Server {
           if (!provision) {
             return errorContent(
               `Provision not found: ${parsed.sourcebook} ${parsed.reference}`,
+              "not_found",
             );
           }
-          return textContent(provision);
+          return textContent({
+            ...provision,
+            _citation: buildCitation(
+              `${parsed.sourcebook} ${provision.reference}`,
+              provision.title ?? `${parsed.sourcebook} ${parsed.reference}`,
+              "hu_fin_get_regulation",
+              { sourcebook: parsed.sourcebook, reference: parsed.reference },
+            ),
+          });
         }
 
         case "hu_fin_list_sourcebooks": {
@@ -206,11 +249,20 @@ function createMcpServer(): Server {
 
         case "hu_fin_search_enforcement": {
           const parsed = SearchEnforcementArgs.parse(args);
-          const results = searchEnforcement({
+          const raw = searchEnforcement({
             query: parsed.query,
             action_type: parsed.action_type,
             limit: parsed.limit,
           });
+          const results = raw.map((item) => ({
+            ...item,
+            _citation: buildCitation(
+              item.reference_number ?? String(item.id),
+              item.firm_name,
+              "hu_fin_get_regulation",
+              { sourcebook: "", reference: item.reference_number ?? String(item.id) },
+            ),
+          }));
           return textContent({ results, count: results.length });
         }
 
@@ -236,7 +288,7 @@ function createMcpServer(): Server {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return errorContent(`Error executing ${name}: ${message}`);
+      return errorContent(`Error executing ${name}: ${message}`, "execution_error");
     }
   });
 

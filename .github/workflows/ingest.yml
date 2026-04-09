@@ -1,0 +1,60 @@
+name: Ingest MNB Data
+
+on:
+  schedule:
+    # Run every Sunday at 02:00 UTC
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    name: Ingest MNB Regulations
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ingest
+        run: npm run ingest
+        env:
+          NODE_ENV: production
+
+      - name: Check for database changes
+        id: diff
+        run: |
+          if git diff --quiet data/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No data changes detected." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Data changes detected — committing updated database." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Compress and upload database as release asset
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f data/database.db ]; then
+            gzip -k -f data/database.db
+            TAG="data-$(date -u '+%Y%m%d')"
+            gh release create "$TAG" data/database.db.gz \
+              --title "Data snapshot $TAG" \
+              --notes "Automated MNB data ingest — $(date -u '+%Y-%m-%d')" \
+              2>/dev/null || \
+            gh release upload "$TAG" data/database.db.gz --clobber
+            echo "Uploaded database.db.gz to release $TAG" >> "$GITHUB_STEP_SUMMARY"
+            rm data/database.db.gz
+          fi
